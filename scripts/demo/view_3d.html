@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Urbex 3D view</title>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #090c11; }
+body { font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+       color: #f4f6f9; -webkit-font-smoothing: antialiased; -webkit-user-select: none; user-select: none; }
+canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+canvas.dragging { cursor: grabbing; }
+.shade { position: absolute; left: 0; right: 0; pointer-events: none; }
+.shade.top { top: 0; height: 120px; background: linear-gradient(rgba(9, 12, 17, .74), rgba(9, 12, 17, 0)); }
+.shade.bottom { bottom: 0; height: 150px; background: linear-gradient(rgba(9, 12, 17, 0), rgba(9, 12, 17, .8)); }
+.hud { position: absolute; pointer-events: none; text-shadow: 0 1px 8px rgba(0, 0, 0, .9); }
+.hud.title { left: 24px; top: 18px; max-width: 45%; }
+.hud.title b { display: block; font-size: 26px; line-height: 1.15; letter-spacing: -.01em; }
+.hud.title span { display: block; margin-top: 3px; font-size: 12.5px; font-weight: 500; color: #d6dee8; }
+.hud.stages { right: 20px; top: 20px; text-align: right; }
+.pill { display: inline-block; margin-left: 6px; padding: 4px 11px; border-radius: 99px; font-size: 12px;
+        font-weight: 600; color: #6c798a; background: rgba(30, 38, 50, .85); text-shadow: none;
+        transition: background .25s, color .25s; }
+.pill.done { color: #e6eaef; }
+.pill.on { color: #fff; }
+.pill.on[data-stage="0"] { background: #7896be; }
+.pill.on[data-stage="1"] { background: #0096fa; }
+.pill.on[data-stage="2"] { background: #f88800; }
+#prediction { margin: 8px 0 0 auto; width: max-content; padding: 4px 12px; border-radius: 99px; font-size: 12.5px;
+              font-weight: 600; color: #fff; background: #ff4b4b; text-shadow: none; opacity: 0; }
+.hud.query { left: 24px; bottom: 18px; max-width: min(66%, 860px); }
+.hud.query small { display: block; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; color: #46b4ff; }
+.hud.query span { display: block; margin-top: 2px; font-size: 14.5px; }
+.hud.controls { right: 20px; bottom: 16px; text-align: right; pointer-events: auto; }
+button { margin-left: 6px; padding: 5px 13px; border: 1px solid rgba(255, 255, 255, .16); border-radius: 99px;
+         font: inherit; font-size: 12px; font-weight: 600; color: #e6eaef; background: rgba(30, 38, 50, .85);
+         cursor: pointer; }
+button:hover { background: rgba(52, 64, 82, .95); }
+button.on { border-color: transparent; background: #0096fa; color: #fff; }
+.hud.controls small { display: block; margin-top: 7px; font-size: 11.5px; color: #aab6c6; }
+#unavailable { position: absolute; left: 0; right: 0; top: 45%; text-align: center; color: #aab6c6; }
+</style>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div class="shade top"></div><div class="shade bottom"></div>
+<div class="hud title"><b id="title"></b><span id="subtitle"></span></div>
+<div class="hud stages">
+  <div id="stages">
+    <span class="pill" data-stage="0">Global BEV</span><span class="pill" data-stage="1">Zoom in</span><span
+      class="pill" data-stage="2">Oblique view</span>
+  </div>
+  <div id="prediction">Prediction</div>
+</div>
+<div class="hud query" id="query"><small>QUERY</small><span></span></div>
+<div class="hud controls">
+  <button id="replay">Replay</button><button id="rotate">Rotate</button>
+  <small>Drag to rotate · scroll to zoom · right-drag to pan</small>
+</div>
+<div id="unavailable" hidden>WebGL is unavailable in this browser, so the interactive view cannot be shown.</div>
+<script>
+"use strict";
+(() => {
+const D = /*DATA*/null;
+const $ = id => document.getElementById(id);
+$("title").textContent = D.title;
+$("subtitle").textContent = D.subtitle;
+$("query").hidden = !D.query;
+$("query").lastChild.textContent = D.query;
+$("stages").hidden = $("replay").hidden = !D.bev;
+const canvas = $("view");
+const gl = canvas.getContext("webgl", {antialias: true, alpha: false});
+if (!gl) { $("unavailable").hidden = false; return; }
+
+// ── GL helpers ──────────────────────────────────────────────────────────────
+const PRECISION = "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n";
+function program(vertex, fragment) {
+  const id = gl.createProgram();
+  for (const [type, source] of [[gl.VERTEX_SHADER, vertex], [gl.FRAGMENT_SHADER, PRECISION + fragment]]) {
+    const shader = gl.createShader(type);
+    gl.shaderSource(shader, source);
+    gl.compileShader(shader);
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(shader));
+    gl.attachShader(id, shader);
+  }
+  gl.linkProgram(id);
+  if (!gl.getProgramParameter(id, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(id));
+  const names = {id};
+  for (let i = 0; i < gl.getProgramParameter(id, gl.ACTIVE_UNIFORMS); i++) {
+    const name = gl.getActiveUniform(id, i).name;
+    names[name] = gl.getUniformLocation(id, name);
+  }
+  for (let i = 0; i < gl.getProgramParameter(id, gl.ACTIVE_ATTRIBUTES); i++) {
+    const name = gl.getActiveAttrib(id, i).name;
+    names[name] = gl.getAttribLocation(id, name);
+  }
+  return names;
+}
+function buffer(data) {
+  const id = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, id);
+  gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+  return id;
+}
+let enabled = [];
+function attributes(list) {                      // [location, buffer, size, type, normalized, stride, offset]
+  enabled.forEach(location => gl.disableVertexAttribArray(location));
+  enabled = list.map(([location, id, size, type, normalized, stride, offset]) => {
+    gl.bindBuffer(gl.ARRAY_BUFFER, id);
+    gl.enableVertexAttribArray(location);
+    gl.vertexAttribPointer(location, size, type, normalized, stride, offset);
+    return location;
+  });
+}
+function bytes(text) {
+  const raw = atob(text), out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+// ── Scene: rebuilt points, BEV ground plane, zoom outlines, predicted box ───
+const points = program(`
+  attribute vec3 aPosition, aColour;
+  uniform mat4 uMatrix; uniform vec3 uLow, uSpan; uniform float uSize, uRadius;
+  varying vec3 vColour;
+  void main() {
+    vec3 p = uLow + aPosition * uSpan;
+    gl_Position = uMatrix * vec4(p, 1.0);
+    gl_PointSize = clamp(uSize / gl_Position.w, 1.5, 64.0);
+    vColour = aColour * mix(1.0, 0.5, smoothstep(uRadius * 0.8, uRadius, length(p.xy)));
+  }`, `
+  varying vec3 vColour;
+  void main() { gl_FragColor = vec4(vColour, 1.0); }`);
+const positionBuffer = buffer(bytes(D.positions)), colourBuffer = buffer(bytes(D.colours));
+
+const plane = program(`
+  attribute vec2 aCorner;
+  uniform mat4 uMatrix; uniform vec4 uBounds;
+  varying vec2 vTexture;
+  void main() {
+    vTexture = vec2(aCorner.x, 1.0 - aCorner.y);
+    gl_Position = uMatrix * vec4(mix(uBounds.xy, uBounds.zw, aCorner), 0.0, 1.0);
+  }`, `
+  uniform sampler2D uTexture; varying vec2 vTexture;
+  void main() {
+    vec3 colour = texture2D(uTexture, vTexture).rgb;
+    float lit = max(colour.r, max(colour.g, colour.b));
+    colour = mix(vec3(dot(colour, vec3(0.299, 0.587, 0.114))), colour, 0.8) * 0.45;
+    gl_FragColor = vec4(mix(vec3(0.035, 0.047, 0.067), colour, smoothstep(0.02, 0.08, lit)), 1.0);
+  }`);
+const cornerBuffer = buffer(new Float32Array([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1]));
+let texture = null, ready = !D.bev;
+if (D.bev) {
+  const image = new Image();
+  image.onerror = () => { ready = true; };
+  image.onload = () => {                         // a power-of-two copy lets WebGL 1 build mipmaps
+    const side = Math.min(2048, gl.getParameter(gl.MAX_TEXTURE_SIZE)), square = document.createElement("canvas");
+    square.width = square.height = side;
+    square.getContext("2d").drawImage(image, 0, 0, side, side);
+    texture = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB, gl.RGB, gl.UNSIGNED_BYTE, square);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    ready = dirty = true;
+  };
+  image.src = D.bev.image;
+}
+
+// Screen-space thick lines; the outer part of each stroke is a dark casing.
+const lines = program(`
+  attribute vec3 aStart, aEnd; attribute vec2 aSide;
+  uniform mat4 uMatrix; uniform vec2 uViewport; uniform vec3 uDepth; uniform float uWidth;
+  varying vec2 vLine;
+  void main() {
+    vec4 a = uMatrix * vec4(aStart, 1.0), b = uMatrix * vec4(aEnd, 1.0);
+    float near = 0.05;
+    if (a.w < near && b.w > near) a = mix(a, b, (near - a.w) / (b.w - a.w));
+    if (b.w < near && a.w > near) b = mix(b, a, (near - b.w) / (a.w - b.w));
+    vec2 from = a.xy / a.w * uViewport * 0.5, to = b.xy / b.w * uViewport * 0.5;
+    float length_ = distance(from, to);
+    vec2 along = length_ > 1e-4 ? (to - from) / length_ : vec2(1.0, 0.0);
+    vec4 p = mix(a, b, aSide.x);
+    vec2 offset = (vec2(-along.y, along.x) * aSide.y + along * (aSide.x * 2.0 - 1.0)) * uWidth * 0.5;
+    p.xy += offset / (uViewport * 0.5) * p.w;
+    float depth = -p.w + uDepth.z;               // pull the stroke toward the eye so it wins depth ties
+    p.z = (uDepth.x * depth + uDepth.y) / -depth * p.w;
+    gl_Position = p;
+    vLine = vec2(aSide.x * length_, aSide.y);
+  }`, `
+  uniform vec3 uColour; uniform float uAlpha, uCore, uWidth, uDash;
+  varying vec2 vLine;
+  void main() {
+    if (uDash > 0.0 && mod(vLine.x, uDash) > uDash * 0.55) discard;
+    float core = 1.0 - smoothstep(uCore - 1.0 / uWidth, uCore + 1.0 / uWidth, abs(vLine.y));
+    gl_FragColor = vec4(mix(vec3(0.07, 0.094, 0.125), uColour, core), uAlpha);
+  }`);
+function strokes(segments) {
+  const sides = [[0, -1], [1, -1], [1, 1], [0, -1], [1, 1], [0, 1]], data = new Float32Array(segments.length * 48);
+  segments.forEach((segment, i) => sides.forEach((side, j) => data.set([...segment, ...side], (i * 6 + j) * 8)));
+  return {id: buffer(data), count: segments.length * 6};
+}
+function outline([x0, y0, x1, y1], z) {
+  return [[x0, y0, z, x1, y0, z], [x1, y0, z, x1, y1, z], [x1, y1, z, x0, y1, z], [x0, y1, z, x0, y0, z]];
+}
+const [bx0, by0, bx1, by1, bz0, bz1] = D.box;
+const boxEdges = strokes([...outline(D.box, bz0), ...outline(D.box, bz1),
+  ...[[bx0, by0], [bx1, by0], [bx1, by1], [bx0, by1]].map(([x, y]) => [x, y, bz0, x, y, bz1])]);
+const zoomEdges = D.zooms.map(bounds => strokes(outline(bounds, 0)));
+
+const faces = program(`
+  attribute vec3 aPosition; uniform mat4 uMatrix;
+  void main() { gl_Position = uMatrix * vec4(aPosition, 1.0); }`, `
+  uniform vec4 uColour;
+  void main() { gl_FragColor = uColour; }`);
+const quad = (a, b, c, d) => [...a, ...b, ...c, ...a, ...c, ...d];
+const corner = (i, j, k) => [[bx0, bx1][i], [by0, by1][j], [bz0, bz1][k]];
+const faceBuffer = buffer(new Float32Array([                                // four sides, bottom, then top
+  ...quad(corner(0, 0, 0), corner(1, 0, 0), corner(1, 0, 1), corner(0, 0, 1)),
+  ...quad(corner(1, 0, 0), corner(1, 1, 0), corner(1, 1, 1), corner(1, 0, 1)),
+  ...quad(corner(1, 1, 0), corner(0, 1, 0), corner(0, 1, 1), corner(1, 1, 1)),
+  ...quad(corner(0, 1, 0), corner(0, 0, 0), corner(0, 0, 1), corner(0, 1, 1)),
+  ...quad(corner(0, 0, 0), corner(0, 1, 0), corner(1, 1, 0), corner(1, 0, 0)),
+  ...quad(corner(0, 0, 1), corner(1, 0, 1), corner(1, 1, 1), corner(0, 1, 1))]));
+
+// ── Camera: an orbit around a target; `height` is the world height in view ──
+const TAN = Math.tan(14 * Math.PI / 180);                                   // 28 degree vertical field of view
+const smooth = t => { t = Math.min(Math.max(t, 0), 1); return t * t * (3 - 2 * t); };
+const boxSide = Math.max(bx1 - bx0, by1 - by0, 1.2 * (bz1 - bz0));
+const oblique = () => (
+  {x: 0, y: 0, z: (bz0 + bz1) / 2, height: Math.max(boxSide * 2, 32), elevation: 30, azimuth: 285});
+function above(bounds, pad) {                                               // north-up view straight down
+  const aspect = canvas.width / canvas.height;
+  return {x: (bounds[0] + bounds[2]) / 2, y: (bounds[1] + bounds[3]) / 2, z: 0, elevation: 90, azimuth: 270,
+          height: Math.max(bounds[3] - bounds[1], (bounds[2] - bounds[0]) / aspect) * pad};
+}
+function timeline() {                            // [start, end, from, to, stage, zoom outline shown from here]
+  const last = oblique(), over = {...last, z: 0, elevation: 90, azimuth: 270, height: last.height * 1.3};
+  let previous = above(D.bev.bounds, 1.06), clock = 1.0;
+  const moves = [[0, clock, previous, previous, 0, -1]];
+  D.zooms.forEach((bounds, i) => {
+    const next = above(bounds, 1.1);
+    moves.push([clock, clock + 1.7, previous, next, 1, i], [clock + 1.7, clock + 2.2, next, next, 1, i]);
+    previous = next;
+    clock += 2.2;
+  });
+  moves.push([clock, clock + 1.6, previous, over, 1, D.zooms.length - 1],
+             [clock + 1.6, clock + 3.8, over, last, 2, D.zooms.length - 1]);
+  return moves;
+}
+function between(from, to, t) {
+  const mix = key => from[key] + (to[key] - from[key]) * t;
+  return {x: mix("x"), y: mix("y"), z: mix("z"), elevation: mix("elevation"), azimuth: mix("azimuth"),
+          height: Math.exp(Math.log(from.height) + (Math.log(to.height) - Math.log(from.height)) * t)};
+}
+function matrices(camera) {
+  const az = camera.azimuth * Math.PI / 180, el = camera.elevation * Math.PI / 180;
+  const distance = camera.height / (2 * TAN), aspect = canvas.width / canvas.height;
+  const back = [Math.cos(el) * Math.cos(az), Math.cos(el) * Math.sin(az), Math.sin(el)];      // target to eye
+  const up = [-Math.sin(el) * Math.cos(az), -Math.sin(el) * Math.sin(az), Math.cos(el)];
+  const right = [up[1] * back[2] - up[2] * back[1], up[2] * back[0] - up[0] * back[2],
+                 up[0] * back[1] - up[1] * back[0]];
+  const eye = [camera.x + back[0] * distance, camera.y + back[1] * distance, camera.z + back[2] * distance];
+  const near = Math.max(0.5, distance * 0.02), far = distance + D.extent * 3;
+  const a = (far + near) / (near - far), b = 2 * far * near / (near - far);
+  const row = (axis, scale) =>
+    [...axis.map(v => v * scale), -(axis[0] * eye[0] + axis[1] * eye[1] + axis[2] * eye[2]) * scale];
+  const rows = [row(right, 1 / TAN / aspect), row(up, 1 / TAN), row(back, a), row(back, -1)];
+  rows[2][3] += b;
+  return {matrix: new Float32Array([0, 1, 2, 3].flatMap(column => rows.map(r => r[column]))), depth: [a, b]};
+}
+
+// ── State and drawing ───────────────────────────────────────────────────────
+let camera = oblique(), intro = !!D.bev, rotating = true, dirty = true, visible = true, clock = 0, last = 0;
+let boxAlpha = intro ? 0 : 1, zoomsShown = intro ? -1 : D.zooms.length - 1, zoomAlpha = intro ? 0.95 : 0.35;
+let stage = -1;
+function setStage(next) {
+  if (next === stage) return;
+  stage = next;
+  document.querySelectorAll(".pill").forEach(pill => {
+    const index = Number(pill.dataset.stage);
+    pill.className = "pill" + (index === stage ? " on" : index < stage ? " done" : "");
+  });
+}
+function finishIntro() {
+  intro = false;
+  camera = oblique();
+  boxAlpha = 1;
+  zoomsShown = D.zooms.length - 1;
+  zoomAlpha = 0.35;
+  setStage(2);
+}
+function advance(seconds) {
+  if (intro) {
+    clock += seconds;
+    const moves = timeline(), end = moves[moves.length - 1][1];
+    if (clock >= end) return finishIntro();
+    const [start, stop, from, to, at, shown] = moves.find(move => clock < move[1]);
+    camera = between(from, to, smooth((clock - start) / (stop - start)));
+    zoomsShown = shown;
+    boxAlpha = smooth((clock - (end - 0.9)) / 0.5);
+    zoomAlpha = at < 2 ? 0.95 : 0.95 - 0.6 * smooth((clock - start) / (stop - start));
+    setStage(at);
+  } else if (rotating) {
+    camera.azimuth += 5 * seconds;
+  }
+}
+function drawStrokes(set, view, colour, width, core, alpha, dash, bias) {
+  attributes([[lines.aStart, set.id, 3, gl.FLOAT, false, 32, 0], [lines.aEnd, set.id, 3, gl.FLOAT, false, 32, 12],
+              [lines.aSide, set.id, 2, gl.FLOAT, false, 32, 24]]);
+  gl.uniformMatrix4fv(lines.uMatrix, false, view.matrix);
+  gl.uniform2f(lines.uViewport, canvas.width, canvas.height);
+  gl.uniform3f(lines.uDepth, view.depth[0], view.depth[1], bias);
+  gl.uniform3fv(lines.uColour, colour);
+  gl.uniform1f(lines.uWidth, width * canvas.height / canvas.clientHeight);
+  gl.uniform1f(lines.uCore, core);
+  gl.uniform1f(lines.uAlpha, alpha);
+  gl.uniform1f(lines.uDash, dash * canvas.height / canvas.clientHeight);
+  gl.drawArrays(gl.TRIANGLES, 0, set.count);
+}
+function draw() {
+  const view = matrices(camera);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.clearColor(0.035, 0.047, 0.067, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.enable(gl.DEPTH_TEST);
+  gl.depthFunc(gl.LEQUAL);
+  gl.depthMask(true);
+  gl.disable(gl.BLEND);
+  if (texture) {
+    gl.useProgram(plane.id);
+    attributes([[plane.aCorner, cornerBuffer, 2, gl.FLOAT, false, 0, 0]]);
+    gl.uniformMatrix4fv(plane.uMatrix, false, view.matrix);
+    gl.uniform4fv(plane.uBounds, D.bev.bounds);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+  }
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.useProgram(lines.id);
+  gl.disable(gl.DEPTH_TEST);                     // zoom outlines are painted on the map, under the points
+  for (const set of zoomEdges.slice(0, zoomsShown + 1)) {
+    drawStrokes(set, view, [0, 0.59, 0.98], 3.5, 0.62, zoomAlpha, 0, 0);
+  }
+  gl.enable(gl.DEPTH_TEST);
+  gl.disable(gl.BLEND);
+  gl.useProgram(points.id);
+  attributes([[points.aPosition, positionBuffer, 3, gl.UNSIGNED_SHORT, true, 0, 0],
+              [points.aColour, colourBuffer, 3, gl.UNSIGNED_BYTE, true, 0, 0]]);
+  gl.uniformMatrix4fv(points.uMatrix, false, view.matrix);
+  gl.uniform3fv(points.uLow, D.low);
+  gl.uniform3fv(points.uSpan, D.span);
+  gl.uniform1f(points.uRadius, D.radius);
+  gl.uniform1f(points.uSize, D.spacing * 1.7 * canvas.height / (2 * TAN));
+  gl.drawArrays(gl.POINTS, 0, D.count);
+  if (boxAlpha > 0) {
+    gl.enable(gl.BLEND);
+    gl.depthMask(false);
+    gl.useProgram(faces.id);
+    attributes([[faces.aPosition, faceBuffer, 3, gl.FLOAT, false, 0, 0]]);
+    gl.uniformMatrix4fv(faces.uMatrix, false, view.matrix);
+    gl.uniform4f(faces.uColour, 1, 0.29, 0.29, 0.07 * boxAlpha);
+    gl.drawArrays(gl.TRIANGLES, 0, 30);
+    gl.uniform4f(faces.uColour, 1, 0.29, 0.29, 0.11 * boxAlpha);
+    gl.drawArrays(gl.TRIANGLES, 30, 6);
+    gl.useProgram(lines.id);
+    gl.depthFunc(gl.GREATER);                    // strokes behind the scene stay visible as faint dashes
+    drawStrokes(boxEdges, view, [0.77, 0.35, 0.33], 2.5, 2, 0.6 * boxAlpha, 14, 0);
+    gl.depthFunc(gl.LEQUAL);
+    gl.depthMask(true);
+    drawStrokes(boxEdges, view, [1, 0.29, 0.29], 5, 0.6, boxAlpha, 0, 0.5);
+  }
+  $("prediction").style.opacity = boxAlpha;
+}
+function frame(now) {
+  const seconds = Math.min((now - last) / 1000, 0.1);
+  last = now;
+  if (visible && (intro || rotating || dirty)) {
+    advance(ready ? seconds : 0);
+    draw();
+    dirty = false;
+  }
+  requestAnimationFrame(frame);
+}
+function resize() {
+  const ratio = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.max(1, Math.round(canvas.clientWidth * ratio));
+  canvas.height = Math.max(1, Math.round(canvas.clientHeight * ratio));
+  dirty = true;
+}
+new ResizeObserver(resize).observe(canvas);
+new IntersectionObserver(entries => { visible = entries[0].isIntersecting; }).observe(canvas);
+
+// ── Interaction ─────────────────────────────────────────────────────────────
+const pointers = new Map();
+function takeControl() {
+  if (intro) finishIntro();
+  rotating = false;
+  $("rotate").className = "";
+  dirty = true;
+}
+function pan(dx, dy) {
+  const scale = camera.height / canvas.clientHeight, az = camera.azimuth * Math.PI / 180;
+  const forward = dy * scale / Math.max(Math.sin(camera.elevation * Math.PI / 180), 0.25);
+  camera.x += Math.sin(az) * dx * scale - Math.cos(az) * forward;
+  camera.y += -Math.cos(az) * dx * scale - Math.sin(az) * forward;
+}
+canvas.addEventListener("pointerdown", event => {
+  canvas.setPointerCapture(event.pointerId);
+  pointers.set(event.pointerId, event);
+  canvas.className = "dragging";
+  takeControl();
+});
+canvas.addEventListener("pointermove", event => {
+  const before = pointers.get(event.pointerId);
+  if (!before) return;
+  const dx = event.clientX - before.clientX, dy = event.clientY - before.clientY;
+  if (pointers.size === 2) {                     // pinch to zoom, two-finger drag to pan
+    const other = [...pointers.values()].find(pointer => pointer.pointerId !== event.pointerId);
+    const span = pointer => Math.hypot(pointer.clientX - other.clientX, pointer.clientY - other.clientY);
+    camera.height = Math.min(Math.max(camera.height * span(before) / Math.max(span(event), 1), 4), D.extent * 2);
+    pan(dx / 2, dy / 2);
+  } else if (event.buttons & 6 || event.shiftKey) {
+    pan(dx, dy);
+  } else {
+    camera.azimuth -= dx * 0.35;
+    camera.elevation = Math.min(Math.max(camera.elevation + dy * 0.35, 4), 90);
+  }
+  pointers.set(event.pointerId, event);
+  dirty = true;
+});
+for (const type of ["pointerup", "pointercancel"]) canvas.addEventListener(type, event => {
+  pointers.delete(event.pointerId);
+  if (!pointers.size) canvas.className = "";
+});
+canvas.addEventListener("wheel", event => {
+  event.preventDefault();
+  takeControl();
+  const step = event.deltaY * (event.deltaMode === 1 ? 16 : 1);
+  camera.height = Math.min(Math.max(camera.height * Math.exp(step * 0.0015), 4), D.extent * 2);
+}, {passive: false});
+canvas.addEventListener("contextmenu", event => event.preventDefault());
+canvas.addEventListener("dblclick", () => { camera = oblique(); dirty = true; });
+$("rotate").className = "on";
+$("rotate").onclick = () => {
+  if (intro) finishIntro();
+  rotating = !rotating;
+  $("rotate").className = rotating ? "on" : "";
+};
+$("replay").onclick = () => {
+  intro = rotating = true;
+  clock = boxAlpha = 0;
+  $("rotate").className = "on";
+};
+resize();
+requestAnimationFrame(now => { last = now; frame(now); });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,52 @@
+# Urbex runtime dependencies. Tested with Python 3.11 and CUDA 12.8.
+#
+# For the complete Megatron training environment:
+#   bash scripts/train/install.sh
+
+# --- torch / inference stack ------------------------------------------------
+torch==2.8.0
+torchvision==0.23.0
+torchaudio==2.8.0
+transformers==4.57.0
+accelerate==0.34.2
+peft==0.12.0
+vllm==0.11.0
+
+# --- distributed runtime ----------------------------------------------------
+ray[default,cgraph]==2.48.0
+tensordict==0.14.2
+dacite
+hydra-core==1.3.4
+omegaconf==2.3.1
+antlr4-python3-runtime==4.9.3
+codetiming
+
+# --- agentic environment ----------------------------------------------------
+gem-llm==0.0.4
+# Keep GEM's optional math dependency compatible with Hydra's ANTLR runtime.
+math-verify==0.3.3
+gymnasium
+pillow
+imageio==2.37.0                  # ROLL trajectory rendering
+numpy==1.26.0
+scipy==1.15.3                    # cKDTree and BEV hole filling
+opencv-python-headless==4.11.0.86
+pyyaml>=6.0
+plyfile                         # raw point clouds, metrics, and asset builders
+rasterio                        # BEV orthophoto IO
+open3d                          # live renderer and verify-cache construction
+
+# --- evaluation / tooling ---------------------------------------------------
+openai                          # OpenAI-compatible baselines
+matplotlib                      # trajectory visualization
+datasets==3.1.0
+modelscope
+jsonlines
+huggingface-hub>=0.36,<1.0
+zstandard>=0.22,<1
+einops
+more_itertools
+pybase64
+tqdm
+pytest
+tensorboard

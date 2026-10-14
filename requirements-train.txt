@@ -1,0 +1,11 @@
+# Install after requirements.txt, with --no-build-isolation (see install.sh).
+# Pinned Megatron + vLLM training profile, including TE-supported FlashAttention.
+# TE installation: https://docs.nvidia.com/deeplearning/transformer-engine-releases/release-2.9/user-guide/installation.html
+megatron-core==0.16.0
+transformer-engine[pytorch,core_cu12]==2.9.0
+flash-attn==2.8.1
+nvidia-ml-py==13.615.71          # NVML-backed torch.cuda memory metrics
+onnx==1.23.1
+onnxscript==0.7.2
+ml_dtypes==0.5.4
+./mcore_adapter

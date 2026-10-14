@@ -1,0 +1,89 @@
+# OpenAI function schemas for the three city-grounding tools.
+#
+# Loaded once at import time by tool_env.load_openai_tool_schemas() and passed
+# verbatim as the chat template's `tools=[...]` argument, so this file is the
+# single source of truth for the tool interface the model sees.
+tools:
+- type: function
+  function:
+    name: get_landmark_xy
+    description: Resolve proper-noun landmarks (road/building/park names) to world XY metres. Optionally
+      projects each result onto a known view's [0,1000] integer frame. Pure lookup — no view is modified.
+    parameters:
+      type: object
+      properties:
+        names:
+          type: array
+          items:
+            type: string
+          description: Proper-noun landmark names to resolve, e.g. ["Castle House", "Bragg Road"]. Generic
+            descriptors ("red car") rarely match.
+        view_id:
+          type: string
+          description: A known view to project onto. Use "global" (the initial BEV) or any "Z<n>" returned
+            by a previous zoom_in. Defaults to "global".
+      required:
+      - names
+- type: function
+  function:
+    name: zoom_in
+    description: Crop view_id's image by bbox_2d to create a new view named "Z<n>" (the response reports
+      the new view_id). Returns the new view's id, world-metre bounds, and the cropped image. Use "global"
+      (the initial BEV) or any prior "Z<k>" as view_id; nesting capped at depth 2 from "global". Cropped
+      world side must be 10–1200 m.
+    parameters:
+      type: object
+      properties:
+        view_id:
+          type: string
+          description: Source view to crop from. Must be "global" (the initial BEV) or a "Z<n>" id returned
+            by an earlier zoom_in. To re-zoom a different region of the BEV, pass "global" again — every
+            prior view's image stays in this conversation history.
+        bbox_2d:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          description: '[x0,y0,x1,y1] integer coords in the source view''s [0,1000] × [0,1000] frame.
+            Origin top-left; x→right, y→down. Must satisfy x0<x1 and y0<y1.'
+      required:
+      - view_id
+      - bbox_2d
+- type: function
+  function:
+    name: render_oblique
+    description: Render ONE oblique 30°-elevation view from a chosen cardinal direction (east / north
+      / west / south) over a candidate bbox on view_id. The image shows the proposed bbox as a red 3D
+      wireframe so you can visually verify the box actually lands on the queried object before committing.
+      To inspect another angle, call render_oblique again with a different `direction`; each call costs
+      1 tool budget.
+    parameters:
+      type: object
+      properties:
+        view_id:
+          type: string
+          description: The view whose [0,1000] frame bbox_2d is expressed in ("global" or any "Z<n>" from
+            a previous zoom_in).
+        bbox_2d:
+          type: array
+          items:
+            type: number
+          minItems: 4
+          maxItems: 4
+          description: '[x0,y0,x1,y1] integer coords in view_id''s [0,1000] × [0,1000] frame. x0<x1 and
+            y0<y1.'
+        direction:
+          type: string
+          enum:
+          - east
+          - north
+          - west
+          - south
+          description: Camera position relative to the bbox center. "east" puts the camera east of the
+            bbox looking west; "south" puts it south looking north; etc. Pick the direction that best
+            exposes the queried object's distinguishing feature.
+      required:
+      - view_id
+      - bbox_2d
+      - direction

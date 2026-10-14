@@ -1,0 +1,41 @@
+# Byte-compiled / build artifacts
+__pycache__/
+*.py[cod]
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Environments
+.venv/
+venv/
+/env/
+
+# Run outputs — nothing under these should ever be committed
+output/
+outputs/
+log/
+logs/
+*.log
+wandb/
+runs/
+
+# Local caches
+.cache/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+
+# Large artifacts: datasets, caches and checkpoints live outside the repo
+# (see README.md)
+*.pth
+*.ckpt
+*.safetensors
+*.ply
+*.parquet

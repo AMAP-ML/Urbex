@@ -1,0 +1,233 @@
+# Urbex GRPO training, single node, 8 GPUs.
+#
+# Sample budget matches the paper run (2 nodes x 8 GPUs, rollout_batch_size 512,
+# 470 steps): 256 x 940 == 512 x 470 == 240,640 trajectories, ~11 epochs over
+# the 2744 training queries.
+#
+# Requires CITY_AGENT_DATA to be exported (see README).
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+exp_name: urbex_qwen3vl_4b_grpo
+seed: 42
+
+city_agent_data: ${oc.env:CITY_AGENT_DATA}
+
+output_dir: ./output/${exp_name}
+logging_dir: ${output_dir}/logs
+render_save_dir: ${output_dir}/render
+
+checkpoint_config:
+  type: file_system
+  output_dir: ${output_dir}/ckpt
+  save_optimizer: false
+
+track_with: tensorboard
+tracker_kwargs:
+  log_dir: ${output_dir}/tensorboard
+
+num_gpus_per_node: 8
+offload_nccl: true
+
+max_steps: 940            # 32 groups/step over 2744 queries = ~86 steps/epoch
+save_steps: 40
+eval_steps: 40
+logging_steps: 1
+resume_from_checkpoint: false
+
+# rollout_batch_size = num_env_groups * group_size = 32 * 8
+rollout_batch_size: 256
+val_batch_size: 16
+response_length: 4096
+sequence_length: 15000
+
+# Per-episode budgets. Invariant: max_tool_calls = max_actions_per_traj - 1,
+# reserving one assistant turn for the <answer> commit.
+max_actions_per_traj: 8
+max_tokens_per_step: 1024
+
+# GRPO. reward_normalization already does group-wise z-scoring, so
+# whiten_advantages would double-normalize and dampen the signal.
+adv_estimator: grpo
+ppo_epochs: 1
+whiten_advantages: false
+reward_clip: 20
+advantage_clip: 10.0
+add_token_level_kl: false
+use_kl_loss: true
+kl_loss_coef: 0.001
+kl_loss_type: low_var_kl
+init_kl_coef: 0.0
+entropy_loss_coef: 0.001
+episode_reward_weight: 1.0
+step_reward_weight: 1.0
+
+reward_normalization:
+  grouping: traj_group_id
+  method: mean_std
+
+pretrain: Qwen/Qwen3-VL-4B-Instruct
+
+actor_train:
+  system_envs:
+    NVTE_FLASH_ATTN: '1'
+    NVTE_FUSED_ATTN: '1'
+    NVTE_UNFUSED_ATTN: '1'
+  model_args:
+    attn_implementation: fa2
+    disable_gradient_checkpointing: false
+    dtype: bf16
+    model_type: ~
+    # Freezing the vision tower saves ~30% VRAM at no measured accuracy cost.
+    freeze_module_prefix: "vision_model.blocks,vision_model.patch_embed"
+  training_args:
+    learning_rate: 1.0e-6
+    lr_scheduler_type: constant
+    weight_decay: 1.0e-2
+    per_device_train_batch_size: 1
+    gradient_accumulation_steps: 32      # rollout_batch_size / num_gpus
+    warmup_steps: 5
+  strategy_args:
+    strategy_name: megatron_train
+    strategy_config:
+      # 4B fits on one GPU at bf16; no model parallelism needed.
+      tensor_model_parallel_size: 1
+      sequence_parallel: true
+      context_parallel_size: 1
+      pipeline_model_parallel_size: 1
+      expert_model_parallel_size: 1
+      use_distributed_optimizer: true
+      recompute_granularity: full
+  device_mapping: list(range(0,8))
+  infer_batch_size: 1
+  offload_nccl: ${offload_nccl}
+  use_dynamic_batching_in_train: true
+  max_tokens_per_microbatch_in_train: 8192
+  sequence_length_round_in_train: 8
+  use_dynamic_batching_in_infer: true
+  max_tokens_per_microbatch_in_infer: 8192
+  sequence_length_round_in_infer: 8
+
+actor_infer:
+  model_args:
+    disable_gradient_checkpointing: true
+    dtype: bf16
+  generating_args:
+    max_new_tokens: ${max_tokens_per_step}
+    temperature: 1.0
+    top_p: 0.95
+    top_k: 60
+    num_return_sequences: 1
+  strategy_args:
+    strategy_name: vllm
+    strategy_config:
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.8
+      block_size: 16
+      # torch.compile triggers illegal memory access on Qwen3-VL.
+      enforce_eager: true
+      # Qwen3-VL ships max_position_embeddings=262144; vLLM would reserve
+      # ~36 GB of KV cache for it and OOM. Cap to the actual budget.
+      max_model_len: 15000
+      disable_mm_preprocessor_cache: true
+      # Worst case per prompt: BEV + one image per tool turn.
+      limit_mm_per_prompt: {image: 16}
+      sleep_level: 2
+  device_mapping: list(range(0,8))
+  offload_nccl: ${offload_nccl}
+
+reference:
+  system_envs:
+    NVTE_FLASH_ATTN: '1'
+    NVTE_FUSED_ATTN: '1'
+    NVTE_UNFUSED_ATTN: '1'
+  model_args:
+    attn_implementation: fa2
+    disable_gradient_checkpointing: false
+    dtype: bf16
+    model_type: ~
+  strategy_args:
+    strategy_name: megatron_infer
+    strategy_config:
+      tensor_model_parallel_size: 1
+      context_parallel_size: 1
+      sequence_parallel: true
+      pipeline_model_parallel_size: 1
+      expert_model_parallel_size: 1
+  device_mapping: list(range(0,8))
+  infer_batch_size: 1
+  offload_nccl: ${offload_nccl}
+  use_dynamic_batching_in_train: true
+  max_tokens_per_microbatch_in_train: 8192
+  sequence_length_round_in_train: 8
+  use_dynamic_batching_in_infer: true
+  max_tokens_per_microbatch_in_infer: 8192
+  sequence_length_round_in_infer: 8
+
+# No external reward model: the terminal reward is computed inside
+# CityGroundingEnv.step from IoU, centre distance and turn count.
+custom_envs:
+  CityTool:
+    env_type: city_tool
+    max_steps: ${max_actions_per_traj}
+    max_tokens_per_step: ${max_tokens_per_step}
+    env_manager_cls: roll.pipeline.agentic.env_manager.city_vl_native_env_manager.CityVLNativeEnvManager
+    use_thread_lock: true
+    # The env returns a full message list plus info["tools"], and the manager
+    # renders it with apply_chat_template(tools=...). No prompt templates.
+    agent_system_template: ""
+    agent_template: ""
+    pre_step_template: ""
+    next_step_template: ""
+    env_config:
+      data_path: ${city_agent_data}/meta/cityrefer_train.jsonl
+      mode: train
+      seed: ${seed}
+      multiview_cache_dir: ${city_agent_data}/verify_region_cache/cityrefer
+      max_tool_calls: 7
+      max_assistant_turns: ${max_actions_per_traj}
+      display_max_side: 768
+      bbox_norm_max: 1000.0
+      # Queries that fail 8 times in a row are skipped from then on.
+      blacklist_file: ${output_dir}/query_blacklist.json
+
+  CityToolVal:
+    env_type: city_tool
+    max_steps: ${max_actions_per_traj}
+    max_tokens_per_step: ${max_tokens_per_step}
+    env_manager_cls: roll.pipeline.agentic.env_manager.city_vl_native_env_manager.CityVLNativeEnvManager
+    use_thread_lock: true
+    agent_system_template: ""
+    agent_template: ""
+    pre_step_template: ""
+    next_step_template: ""
+    env_config:
+      data_path: ${city_agent_data}/meta/cityrefer_val.jsonl
+      mode: val
+      seed: ${seed}
+      multiview_cache_dir: ${city_agent_data}/verify_region_cache/cityrefer
+      max_tool_calls: 7
+      max_assistant_turns: ${max_actions_per_traj}
+      display_max_side: 768
+      bbox_norm_max: 1000.0
+
+train_env_manager:
+  # 256 envs / 16 per worker = 16 EnvironmentWorker actors. Raising
+  # rollout_batch_size is bounded by CPU RAM, not VRAM: decoded BEV crops and
+  # pixel_values accumulate in the DataProto batch.
+  max_env_num_per_worker: 16
+  num_env_groups: 32
+  group_size: 8
+  tags: [CityTool]
+  num_groups_partition: [32]
+
+val_env_manager:
+  max_env_num_per_worker: 4
+  num_env_groups: ${val_batch_size}
+  group_size: 1                # greedy val: same prompt -> same output
+  tags: [CityToolVal]
+  num_groups_partition:
+    - ${val_batch_size}

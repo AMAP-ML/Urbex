@@ -1,0 +1,26 @@
+Urbex
+Copyright 2026 The Urbex Authors
+
+This product includes software developed as part of ROLL
+(https://github.com/alibaba/ROLL), Copyright 2025 Alibaba Group Holding
+Limited, licensed under the Apache License, Version 2.0.
+
+Derived from ROLL and retaining that copyright:
+
+    roll/
+    mcore_adapter/
+
+Urbex-specific additions, contributed under the same license:
+
+    roll/pipeline/agentic/env/city_grounding/
+    roll/pipeline/agentic/env_manager/city_vl_native_env_manager.py
+    roll/pipeline/agentic/env_manager/city_vl_rollout_env_manager.py
+    scripts/
+    notebooks/
+
+The agentic environment scaffolding in roll/pipeline/agentic/ additionally
+references RAGEN (https://github.com/RAGEN-AI/RAGEN).
+
+Datasets are not distributed with this repository. The processed data on
+Hugging Face (vvangfaye/Urbex-Data) is derived from CityRefer, SensatUrban
+and STPLS3D, which remain under their original terms; see the dataset card.

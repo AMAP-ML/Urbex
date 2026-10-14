@@ -1,0 +1,126 @@
+# Urbex test-set rollout: greedy decoding, group_size=1, one pass over the split.
+#
+# Requires CITY_AGENT_DATA and URBEX_MODEL_PATH to be exported (see README).
+
+hydra:
+  run:
+    dir: .
+  output_subdir: null
+
+pipeline_cls: roll.pipeline.agentic.agentic_rollout_pipeline.AgenticRolloutPipeline
+
+exp_name: urbex_eval
+seed: 42
+
+city_agent_data: ${oc.env:CITY_AGENT_DATA}
+pretrain: ${oc.env:URBEX_MODEL_PATH}
+
+output_dir: ./output/${exp_name}
+logging_dir: ${output_dir}/logs
+rollout_dump_dir: ${output_dir}/dump
+
+num_gpus_per_node: 8
+rpc_timeout: 7200
+
+max_steps: -1            # rollout.py sets this to ceil(N / rollout_batch_size)
+save_steps: 0
+eval_steps: 0
+logging_steps: 1
+resume_from_checkpoint: false
+
+# 8 GPUs x 16 envs = 128 concurrent episodes.
+rollout_batch_size: 128
+val_batch_size: 1
+sequence_length: 16384
+
+max_actions_per_traj: 8
+max_tokens_per_step: 1024
+
+# The rollout pipeline never instantiates the actor_train cluster, but
+# AgenticRolloutPipeline loads the tokenizer from actor_train.model_args.
+actor_train:
+  model_args:
+    model_name_or_path: ${pretrain}
+  strategy_args:
+    strategy_name: hf_infer
+
+actor_infer:
+  model_args:
+    disable_gradient_checkpointing: true
+    dtype: bf16
+    model_name_or_path: ${pretrain}
+  generating_args:
+    max_new_tokens: ${max_tokens_per_step}
+    # vLLM treats temperature=0 as greedy, so per-sample IoU is reproducible.
+    temperature: 0.0
+    top_p: 1.0
+    top_k: -1
+    num_return_sequences: 1
+  strategy_args:
+    strategy_name: vllm
+    strategy_config:
+      tensor_parallel_size: 1
+      gpu_memory_utilization: 0.8
+      block_size: 16
+      max_model_len: 16384
+      enforce_eager: true
+      disable_mm_preprocessor_cache: false
+      limit_mm_per_prompt: {image: 16}
+      sleep_level: 1
+      load_format: auto
+  # worker_config evaluates this string, so it must stay a Python expression.
+  device_mapping: list(range(0,8))
+
+# reward/reference are deliberately omitted rather than set to null: dacite
+# validates the field types and rejects None even where the default is None.
+# The rollout pipeline never instantiates either cluster.
+
+custom_envs:
+  CityTool:
+    env_type: city_tool
+    max_steps: ${max_actions_per_traj}
+    max_tokens_per_step: ${max_tokens_per_step}
+    env_manager_cls: roll.pipeline.agentic.env_manager.city_vl_rollout_env_manager.CityVLRolloutEnvManager
+    use_thread_lock: true
+    agent_system_template: ""
+    agent_template: ""
+    pre_step_template: ""
+    next_step_template: ""
+    rollout_dump_jsonl: ${output_dir}/records.jsonl
+    rollout_iou_threshold: 0.0
+    vis_dir: ${output_dir}/vis
+    vis_iou_min: 0.3
+    # Must stay at this level: make_env_configs only copies top-level keys into
+    # the manager, so a nested sequential_mode would be invisible to it.
+    sequential_mode: true
+    env_config:
+      data_path: ${city_agent_data}/meta/cityrefer_test_ND.jsonl
+      mode: val
+      seed: ${seed}
+      multiview_cache_dir: ${city_agent_data}/verify_region_cache/cityrefer
+      max_tool_calls: 7
+      max_assistant_turns: ${max_actions_per_traj}
+      display_max_side: 768
+      bbox_norm_max: 1000.0
+
+train_env_manager:
+  llm_proxy:
+    proxy_type: policy
+    proxy_config: {}
+  # 128 envs / 16 per worker = 8 workers, one per GPU; each runs its envs in
+  # threads against the local vLLM replica via the EnvAffinityRouter.
+  max_env_num_per_worker: 16
+  num_env_groups: 128
+  group_size: 1
+  tags: [CityTool]
+  num_groups_partition: [128]
+
+val_env_manager:
+  llm_proxy:
+    proxy_type: policy
+    proxy_config: {}
+  max_env_num_per_worker: 1
+  num_env_groups: 1
+  group_size: 1
+  tags: [CityTool]
+  num_groups_partition: [1]
