@@ -22,7 +22,7 @@ python -m scripts.data.release pack --data-root /path/to/data --output /path/to/
 python -m scripts.data.release upload --folder /path/to/staging --repo-id owner/Urbex-Data
 ```
 
-Include original PLY with `pack --raw-root /path/to/raw_data`, or add it to an existing release:
+Include original STPLS3D PLY with `pack --raw-root /path/to/raw_data`, or add it to an existing release. SensatUrban PLY are never staged, because the SensatUrban terms forbid redistribution:
 
 ```bash
 python -m scripts.data.release add-ply --raw-root /path/to/raw_data --folder /path/to/staging

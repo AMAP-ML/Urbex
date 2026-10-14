@@ -46,7 +46,10 @@ def download_release(repo_id, dataset, output, scenes=None, all_scenes=False,
     if point_clouds:
         requested = sorted(clouds) if all_scenes else selected
         if not clouds or any(scene not in clouds for scene in requested):
-            raise ValueError('Original point clouds are not released for the requested scenes')
+            hint = (' SensatUrban point clouds are not redistributed; request them from '
+                    'https://github.com/QingyongHu/SensatUrban and place the PLY files under '
+                    'raw_data/sensaturban/ply/{train,test}/.') if dataset == 'cityrefer' else ''
+            raise ValueError('Original point clouds are not released for the requested scenes.' + hint)
         # Data lives under output/<dataset>; raw_data is its sibling directory.
         for scene in requested:
             for entry in clouds[scene]:

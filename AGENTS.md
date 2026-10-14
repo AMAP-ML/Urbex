@@ -108,11 +108,14 @@ cap and `enforce_eager` unless the replacement has been validated.
   pools. Hub repositories are public; `hf auth login` is only needed for uploads. Release
   uploads default to private; `release upload --public` explicitly selects public
   visibility. The uploader refuses a visibility mismatch and never makes an
-  existing private repository public automatically. Original PLY is optional:
-  pack with `--raw-root` or extend an existing staging folder with `release add-ply`.
-  `download --point-clouds` keeps original filenames and restores the sibling
-  `raw_data/` tree; `--all --point-clouds` includes every source PLY, including
-  scenes outside the annotation/cache subset. Default inference excludes PLY.
+  existing private repository public automatically. Original PLY is optional and
+  covers STPLS3D only: SensatUrban's terms forbid redistribution, so never stage or
+  upload SensatUrban PLY; CityRefer users obtain them from the official SensatUrban
+  release. Pack with `--raw-root` or extend an existing staging folder with
+  `release add-ply`. `download --point-clouds` keeps original filenames and restores
+  the sibling `raw_data/` tree; `--all --point-clouds` includes every hosted source
+  PLY, including scenes outside the annotation/cache subset. Default inference
+  excludes PLY.
 - STPLS3D source PLY may be `<scene>.ply` or `<scene>_points.ply`; preserve the
   resolver's support for both rather than renaming raw data.
 - Candidate pools are for Hit@k scoring, not required instance proposals for the

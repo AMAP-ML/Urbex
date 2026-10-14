@@ -192,20 +192,22 @@ def test_point_clouds_are_optional_and_keep_original_paths(release, tmp_path):
     sensat.mkdir(parents=True)
     stpls.mkdir(parents=True)
     (sensat / 'scene.ply').write_bytes(b'city cloud')
-    (sensat / 'extra.ply').write_bytes(b'extra cloud')
     (stpls / 'scene_points.ply').write_bytes(b'stpls cloud')
+    (stpls / 'extra.ply').write_bytes(b'extra cloud')
     add_point_clouds(raw, stage)
+    # SensatUrban terms forbid redistribution, so its PLY are never staged.
+    assert not (stage / 'raw_data/sensaturban').exists()
     output = tmp_path / 'workspace/data'
     download_release('owner/repo', 'cityrefer_ND', output, scenes=['scene'])
     assert not (output.parent / 'raw_data').exists()
-    download_release('owner/repo', 'cityrefer_ND', output, scenes=['scene'], point_clouds=True)
-    result = output.parent / 'raw_data/sensaturban/ply/train'
-    assert (result / 'scene.ply').read_bytes() == b'city cloud'
-    assert not (result / 'extra.ply').exists()
-    download_release('owner/repo', 'cityrefer_ND', output, all_scenes=True, point_clouds=True)
-    assert (result / 'extra.ply').read_bytes() == b'extra cloud'
+    with pytest.raises(ValueError, match='SensatUrban point clouds are not redistributed'):
+        download_release('owner/repo', 'cityrefer_ND', output, scenes=['scene'], point_clouds=True)
     download_release('owner/repo', 'stpls3d', output, scenes=['scene'], point_clouds=True)
-    assert (output.parent / 'raw_data/STPLS3D/RealWorldData/scene_points.ply').read_bytes() == b'stpls cloud'
+    result = output.parent / 'raw_data/STPLS3D/RealWorldData'
+    assert (result / 'scene_points.ply').read_bytes() == b'stpls cloud'
+    assert not (result / 'extra.ply').exists()
+    download_release('owner/repo', 'stpls3d', output, all_scenes=True, point_clouds=True)
+    assert (result / 'extra.ply').read_bytes() == b'extra cloud'
 
 
 def test_model_download_pins_revision(release, monkeypatch, tmp_path):

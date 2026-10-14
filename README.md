@@ -44,7 +44,9 @@ export CITY_AGENT_DATA_STPLS3D=/path/to/urbex/data/stpls3d
 export URBEX_MODEL_PATH=/path/to/urbex/model/Urbex-4B
 ```
 
-Use `--scenes <scene_id> ...` for selected scenes. Add `--point-clouds` to download original PLY into the sibling `raw_data/` directory, or `--candidates` for CityRefer Hit@k. Data files are checksum-verified; `--repo-id` or `HF_DATASET_ID` / `HF_MODEL_ID` selects another Hub repository.
+Use `--scenes <scene_id> ...` for selected scenes, or `--candidates` for CityRefer Hit@k. Data files are checksum-verified; `--repo-id` or `HF_DATASET_ID` / `HF_MODEL_ID` selects another Hub repository.
+
+Original point clouds are needed only for 3D metrics and asset building. For STPLS3D, add `--point-clouds` to download the PLY into the sibling `raw_data/` directory. SensatUrban point clouds (CityRefer scenes) are not redistributed: request them through the [official SensatUrban release](https://github.com/QingyongHu/SensatUrban) and place the PLY files under `raw_data/sensaturban/ply/{train,test}/`.
 
 BEV images and oblique-view caches are provided. Build them only as needed:
 

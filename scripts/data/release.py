@@ -14,10 +14,10 @@ UPSTREAM_NOTICE = """
 These assets include processed annotations, rendered views and candidate pools based on upstream urban datasets. Their data terms are separate from the Urbex code license.
 
 - [CityRefer](https://github.com/ATR-DBI/CityRefer): the [dataset datasheet](https://proceedings.neurips.cc/paper_files/paper/2023/file/f4cef76305dcad4efd3537da087ff520-Supplemental-Datasets_and_Benchmarks.pdf) specifies CC BY 4.0 for data and MIT for baseline code.
-- [SensatUrban](https://github.com/QingyongHu/SensatUrban): source point clouds for CityRefer scenes. Consult the upstream download terms; this release does not assign a replacement license to those source assets or derivatives.
+- [SensatUrban](https://github.com/QingyongHu/SensatUrban): source point clouds for CityRefer scenes. The original point clouds are not included in this repository; obtain them through the official SensatUrban download form and place the PLY files under `raw_data/sensaturban/ply/{train,test}/` for 3D metrics. This release does not assign a replacement license to SensatUrban-derived assets.
 - [STPLS3D](https://www.stpls3d.com/data): the official data page specifies CC BY-NC-SA 3.0. Retain attribution, noncommercial use and share-alike conditions for STPLS3D-derived assets.
 
-Urbex converts annotations to JSONL, generates BEV mappings and cached oblique renders, and packages those assets for scene-level downloads. Cite Urbex and the applicable upstream datasets. Raw point clouds are optional release assets; when included, preserve their upstream terms and use `--point-clouds` to download them.
+Urbex converts annotations to JSONL, generates BEV mappings and cached oblique renders, and packages those assets for scene-level downloads. Cite Urbex and the applicable upstream datasets. STPLS3D point clouds are optional release assets; when included, preserve their upstream terms and use `--point-clouds` to download them. SensatUrban point clouds are not redistributed.
 """
 
 
@@ -115,7 +115,7 @@ def pack_release(data_root, output, candidates=None, raw_root=None):
         'Set `HF_DATASET_ID` to this repository ID. Archives restore the original '
         '`verify_region_cache/<dataset>/<scene>/` layout. `manifest.json` records '
         'SHA-256 checksums, sizes and extraction paths. CityRefer candidate pools '
-        'are optional resources for Hit@k evaluation. Raw point clouds, when included, '
+        'are optional resources for Hit@k evaluation. STPLS3D point clouds, when included, '
         'are downloaded only with `--point-clouds`.\n' + UPSTREAM_NOTICE)
     if raw_root:
         manifest = add_point_clouds(raw_root, output)
@@ -123,13 +123,19 @@ def pack_release(data_root, output, candidates=None, raw_root=None):
 
 
 def add_point_clouds(raw_root, folder):
-    """Add original PLY files to an already packed data release."""
+    """Add original STPLS3D PLY files to an already packed data release.
+
+    SensatUrban point clouds are never staged: their terms forbid redistribution,
+    and CityRefer users obtain them from the official SensatUrban release.
+    """
     raw_root, folder = Path(raw_root).resolve(), Path(folder).resolve()
     if folder.is_relative_to(raw_root) or raw_root.is_relative_to(folder):
         raise ValueError('Staging and raw-data directories must be separate')
     manifest = json.loads((folder / 'manifest.json').read_text())
     point_clouds = {}
-    for dataset, directory in (('cityrefer', 'sensaturban'), ('stpls3d', 'STPLS3D')):
+    if (raw_root / 'sensaturban').exists():
+        print('Skipping sensaturban/: SensatUrban point clouds are not redistributed', flush=True)
+    for dataset, directory in (('stpls3d', 'STPLS3D'),):
         files = sorted((raw_root / directory).rglob('*.ply'))
         if not files:
             raise ValueError(f'No PLY files found in {raw_root / directory}')
